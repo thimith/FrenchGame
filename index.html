@@ -196,6 +196,7 @@
           <label class="check"><input type="checkbox" id="optGuides" checked> Show letter guide</label>
         </div>
         <button class="btn alt" id="teachBtn" style="font-size:16px">🎓 Teach all 9 sounds (native speaker)</button>
+        <button class="btn alt" id="pubBtn" style="font-size:16px;display:none">📤 Publish my taught sounds for Sharan</button>
         <p class="tiny" style="margin:8px 0 0">For a native French speaker: say each sound once and the game uses your voice as the exact target. You then get a link to share your pronunciation as someone else's reference.</p>
       </details>
       <p class="tiny" style="margin:14px 0 0">Tip: turn the sound up, hold the phone at about face height and play somewhere quiet. Tap <b>Calibrate</b> once so it learns your voice (10 seconds).</p>
@@ -362,7 +363,7 @@ function voiceType(){ if (opt.voice !== 'auto') return opt.voice;
   return autoType; }
 function baseProto(L){ const vt = voiceType(), v = vt === 'low' ? 'm' : 'f'; const b = VOW[L][v], bi = BIAS[v][L], k = vt === 'child' ? 1.15 : 1;
   return [b[0]*k*Math.pow(bi[0], 0.75), b[1]*k*Math.pow(bi[1], 0.75)]; }
-let CAL = {}, CALV = {}, REF = null;
+let CAL = {}, CALV = {}, REF = null; var REF_DATE = '';
 try { CAL = JSON.parse(localStorage.getItem('srf-cal') || '{}') || {}; CALV = JSON.parse(localStorage.getItem('srf-calv') || '{}') || {}; REF = JSON.parse(localStorage.getItem('srf-ref') || 'null'); } catch(e){}
 try { const m = location.hash.match(/#ref=([A-Za-z0-9+\/]+)/); if (m){ REF = JSON.parse(decodeURIComponent(escape(atob(m[1])))); localStorage.setItem('srf-ref', JSON.stringify(REF)); history.replaceState(null, '', location.pathname); setTimeout(() => toast('Native French reference loaded ✓ Now tap Calibrate.', 4000), 800); } } catch(e){}
 function protoSource(){ const vt = voiceType(); return CALV[vt] ? 'taught' : (REF && CAL[vt] && CAL[vt].corners ? 'native ref' : (CAL[vt] ? 'calibrated' : 'default')); }
@@ -373,7 +374,8 @@ function proto(L){ const vt = voiceType();
   if (c) return [b[0]*Math.exp(c.k1), b[1]*Math.exp(c.k2)];
   return [b[0]*opt.fine, b[1]*opt.fine]; }
 function calStatus(){ const vt = voiceType(), src = protoSource();
-  const msg = { taught: 'Using your own taught sounds ✓', 'native ref': 'Calibrated against the native French reference ✓', calibrated: 'Calibrated to your voice ✓', default: (REF ? 'Native reference loaded. Tap Calibrate to use it.' : 'Not calibrated yet. Tap Calibrate (10 s).') }[src];
+  const msg = { taught: 'Using your own taught sounds ✓', 'native ref': 'Calibrated against the native French reference ✓' + (REF_DATE ? ' (updated ' + new Date(REF_DATE).toLocaleDateString() + ')' : ''), calibrated: 'Calibrated to your voice ✓', default: (REF ? 'Native French reference ready' + (REF_DATE ? ' (updated ' + new Date(REF_DATE).toLocaleDateString() + ')' : '') + '. Tap Calibrate to use it.' : 'Not calibrated yet. Tap Calibrate (10 s).') }[src];
+  const pb = document.getElementById('pubBtn'); if (pb) pb.style.display = CALV[vt] ? '' : 'none';
   $('#calStatus').innerHTML = msg + ((CAL[vt] || CALV[vt]) ? ' <a href="#" id="calReset" style="color:#9fb0c6">reset</a>' : '');
   $('#optFine').disabled = !!CAL[vt]; const r = $('#calReset'); if (r) r.onclick = e => { e.preventDefault(); delete CAL[vt]; delete CALV[vt]; saveCal(); calStatus(); }; }
 
@@ -953,15 +955,54 @@ function finishCal(c){
 // native reference = each sound's log-formants relative to the speaker's own A/I/OU average (speaker-independent shape)
 function cornerMean(cs){ let m1 = 0, m2 = 0; CORNERS.forEach(V => { m1 += Math.log(cs[V][0]); m2 += Math.log(cs[V][1]); }); return [m1/3, m2/3]; }
 function makeRef(res){ const m = cornerMean(res), ref = {}; ALL9.forEach(V => { if (res[V]) ref[V] = [+(Math.log(res[V][0]) - m[0]).toFixed(3), +(Math.log(res[V][1]) - m[1]).toFixed(3)]; }); return ref; }
+// ---------- Publishing the native reference to the repo (reference.json) ----------
+const GH = (() => { const host = location.hostname, seg = location.pathname.split('/').filter(Boolean);
+  return { owner: host.endsWith('github.io') ? host.split('.')[0] : 'thimith', repo: host.endsWith('github.io') && seg[0] ? seg[0] : 'FrenchGame' }; })();
+function getToken(){ try { return localStorage.getItem('srf-gh-token') || ''; } catch(e){ return ''; } }
+async function publishRef(ref, token){
+  const url = `https://api.github.com/repos/${GH.owner}/${GH.repo}/contents/reference.json`;
+  const headers = { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
+  let sha; const g = await fetch(url, { headers }); if (g.ok){ sha = (await g.json()).sha; } else if (g.status === 401 || g.status === 403) throw new Error('auth');
+  const body = { ref, updated: new Date().toISOString(), version: 1 };
+  const content = btoa(unescape(encodeURIComponent(JSON.stringify(body, null, 1))));
+  const r = await fetch(url, { method: 'PUT', headers, body: JSON.stringify({ message: 'Update native French reference (taught in game)', content, sha }) });
+  if (r.status === 401 || r.status === 403) throw new Error('auth');
+  if (!r.ok) throw new Error('http ' + r.status);
+  return body;
+}
 function showShare(res){
-  const ref = makeRef(res), code = btoa(unescape(encodeURIComponent(JSON.stringify(ref)))).replace(/=+$/, '');
-  const link = location.origin + location.pathname + '#ref=' + code;
-  $('#overKicker').textContent = 'Native reference saved';
+  const ref = makeRef(res);
+  const gameLink = location.origin + location.pathname;
+  $('#overKicker').textContent = 'Your sounds are saved';
   $('#overTitle').innerHTML = 'Merci ! 🇫🇷';
-  $('#overSub').innerHTML = `The game now uses <b>your</b> voice as the target for every sound on this phone.<br><br>To give Sharan your pronunciation as her reference, send her this link. She opens it once, taps <b>Calibrate</b>, and the game maps your vowels onto her voice.`;
-  $('#overStats').innerHTML = `<li style="display:block;word-break:break-all;font-size:12px;color:#c9bfd8">${link}</li>`;
+  $('#overSub').innerHTML = `The game now uses <b>your</b> voice as the target on this phone.<br><br>Tap <b>Publish for Sharan</b> to save your pronunciation to the game itself. Then her normal link (<b>${gameLink.replace(/^https?:\/\//, '')}</b>) always uses your latest teaching.`;
+  const tok = getToken();
+  $('#overStats').innerHTML = `<li style="display:block">
+    <div id="tokBox" style="display:${tok ? 'none' : 'block'}">
+      <div class="tiny" style="margin-bottom:6px">One-time setup: paste a GitHub token that can edit <b>${GH.owner}/${GH.repo}</b>. Create one at <b>github.com → Settings → Developer settings → Fine-grained tokens</b>. Choose only the <b>${GH.repo}</b> repository, with the permission <b>Contents: Read and write</b>. It's stored only on this phone.</div>
+      <input id="tokIn" type="password" placeholder="github_pat_…" autocomplete="off" style="width:100%;font:inherit;font-size:15px;background:#121842;color:#fbf3e6;border:1px solid #3a4580;border-radius:12px;padding:10px">
+    </div>
+    <div id="pubMsg" class="tiny" style="margin-top:8px"></div></li>`;
   $('#again').style.display = 'none';
-  const cp = $('#copyBtn'); cp.style.display = ''; cp.textContent = 'Copy link'; cp.onclick = async () => { try { await navigator.clipboard.writeText(link); cp.textContent = 'Copied ✓'; } catch(e){ cp.textContent = 'Select the link above and copy it'; } };
+  const cp = $('#copyBtn'); cp.style.display = ''; cp.disabled = false; cp.textContent = '📤 Publish for Sharan';
+  cp.onclick = async () => {
+    let token = getToken(); const inp = $('#tokIn');
+    if (!token && inp && inp.value.trim()){ token = inp.value.trim(); }
+    if (!token){ $('#pubMsg').textContent = 'Paste your GitHub token first.'; return; }
+    cp.textContent = 'Publishing…'; cp.disabled = true;
+    try {
+      await publishRef(ref, token);
+      try { localStorage.setItem('srf-gh-token', token); localStorage.setItem('srf-ref', JSON.stringify(ref)); } catch(e){}
+      REF = ref; $('#tokBox').style.display = 'none';
+      cp.textContent = 'Published ✓';
+      $('#pubMsg').innerHTML = `Done. In about a minute, Sharan's link uses your new teaching. Send her: <b>${gameLink}</b>`;
+    } catch(e){
+      cp.disabled = false; cp.textContent = '📤 Publish for Sharan';
+      if (e.message === 'auth'){ try { localStorage.removeItem('srf-gh-token'); } catch(_){} $('#tokBox').style.display = 'block';
+        $('#pubMsg').textContent = "GitHub refused that token. Check it is for this repository with 'Contents: Read and write', then paste it again."; }
+      else $('#pubMsg').textContent = "Couldn't reach GitHub (" + e.message + '). Check your connection and try again.';
+    }
+  };
   $('#menu').classList.add('hidden'); $('#over').classList.remove('hidden');
 }
 // ---------- UI ----------
@@ -983,6 +1024,7 @@ function toMenu(){ S.state = 'menu'; G.endAt = 0; CALRUN = null; center(''); sho
 $('#playBtn').onclick = () => start('play');
 $('#calBtn').onclick = () => start('cal');
 $('#teachBtn').onclick = () => start('teach');
+$('#pubBtn').onclick = () => { const v = CALV[voiceType()]; if (v) showShare(v); };
 $('#practiceBtn').onclick = () => start('practice');
 $('#againBtn').onclick = () => start('play');
 $('#overMenuBtn').onclick = toMenu; $('#menuBtn').onclick = toMenu;
@@ -993,6 +1035,11 @@ $('#mapBtn').onclick = () => { $('#mapPop').classList.toggle('show'); $('#tipPop
 ['#optVoice','#optSet','#optStrict','#optShow'].forEach(id => $(id).onchange = () => { readOpts(); calStatus(); });
 $('#optGuides').onchange = readOpts; $('#optSay').onchange = readOpts;
 document.addEventListener('visibilitychange', () => { if (document.hidden && S.state === 'play' && !S.paused) $('#pauseBtn').click(); });
+(async () => { try {
+  if (location.protocol.startsWith('http') && !location.hash.includes('ref=')){
+    const r = await fetch('reference.json?t=' + Date.now(), {cache: 'no-store'});
+    if (r.ok){ const j = await r.json(); if (j && j.ref){ REF = j.ref; REF_DATE = j.updated || ''; try { localStorage.setItem('srf-ref', JSON.stringify(REF)); } catch(e){} calStatus(); } }
+  } } catch(e){} })();
 calStatus(); setTip('U'); resize(); buildLanes();
 requestAnimationFrame(loop);
 </script>
