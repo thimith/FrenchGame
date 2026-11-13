@@ -115,6 +115,7 @@
   <div class="plaque" id="target"></div>
   <div class="center" id="center"></div>
   <div class="toast" id="toast"></div>
+  <div id="dbg" style="position:absolute;left:10px;top:calc(var(--st) + 110px);z-index:6;font:11px/1.35 ui-monospace,monospace;background:rgba(0,0,0,.6);padding:6px 8px;border-radius:8px;display:none;pointer-events:none;white-space:pre"></div>
 
   <div class="pop" id="mapPop"><canvas id="chart"></canvas><div class="tiny" style="margin-top:6px">White dot = your voice. Circles = target sounds. ← tongue forward · tongue back →</div></div>
   <div class="pop" id="tipPop"><div id="tip"></div></div>
@@ -271,6 +272,30 @@ function lpcFormants(raw, sr){
   const f2 = f.find(v => v > f1 + 120 && v < 3600); if (f2 === undefined) return null;
   return [f1, f2];
 }
+// Noise-subtracted spectral (selective) LPC: robust to room hiss on phone mics
+// Spectral-domain selective LPC with noise subtraction
+function fftMag2(x){ // real input length N (pow2) -> power spectrum N/2+1
+  const N=x.length, re=Float64Array.from(x), im=new Float64Array(N);
+  for(let i=1,j=0;i<N;i++){ let bit=N>>1; for(;j&bit;bit>>=1) j^=bit; j^=bit; if(i<j){ [re[i],re[j]]=[re[j],re[i]]; } }
+  for(let len=2;len<=N;len<<=1){ const ang=-2*Math.PI/len, wr=Math.cos(ang), wi=Math.sin(ang);
+    for(let i=0;i<N;i+=len){ let cr=1,ci=0; for(let k=0;k<len/2;k++){ const a=i+k,b=a+len/2; const tr=re[b]*cr-im[b]*ci, ti=re[b]*ci+im[b]*cr; re[b]=re[a]-tr; im[b]=im[a]-ti; re[a]+=tr; im[a]+=ti; const nr=cr*wr-ci*wi; ci=cr*wi+ci*wr; cr=nr; } } }
+  const P=new Float64Array(N/2+1); for(let k=0;k<=N/2;k++) P[k]=re[k]*re[k]+im[k]*im[k]; return P; }
+const WIN={}; function hann(N){ if(!WIN[N]){ const w=new Float64Array(N); for(let i=0;i<N;i++) w[i]=0.5-0.5*Math.cos(2*Math.PI*i/(N-1)); WIN[N]=w; } return WIN[N]; }
+function psd(raw){ const N=raw.length, w=hann(N), x=new Float64Array(N); for(let i=0;i<N;i++) x[i]=raw[i]*w[i]; return fftMag2(x); }
+const SPEC = {p:8, fmax:4000, over:2, pre:0.97, bw:900};
+function formantsFromPSD(P, sr, noise){
+  const N=(P.length-1)*2, df=sr/N, kmax=Math.min(P.length-1, Math.floor(SPEC.fmax/df));
+  const S=new Float64Array(kmax+1);
+  for(let k=0;k<=kmax;k++){ let v=P[k]-(noise?SPEC.over*noise[k]:0); const floor=P[k]*0.02; if(v<floor) v=floor;
+    const w=2*Math.PI*k/N; v*=1+SPEC.pre*SPEC.pre-2*SPEC.pre*Math.cos(w); S[k]=v; }
+  const p=SPEC.p, r=new Float64Array(p+1);
+  for(let q=0;q<=p;q++){ let s=0; for(let k=0;k<=kmax;k++){ const wgt=(k===0||k===kmax)?0.5:1; s+=wgt*S[k]*Math.cos(Math.PI*q*k/kmax); } r[q]=s; }
+  if(r[0]<=0) return null; r[0]*=1.0001;
+  let a=new Float64Array(p+1); a[0]=1; let e=r[0];
+  for(let i=1;i<=p;i++){ let acc=r[i]; for(let j=1;j<i;j++) acc+=a[j]*r[i-j]; const k=-acc/e; const na=a.slice(); for(let j=1;j<i;j++) na[j]=a[j]+k*a[i-j]; na[i]=k; a=na; e*=(1-k*k); if(e<=0) return null; }
+  const {re,im}=polyRoots(Array.from(a)); const fe=kmax*df, f=[];
+  for(let i=0;i<p;i++){ if(im[i]<=0.005) continue; const freq=Math.atan2(im[i],re[i])/Math.PI*fe; const bw=-Math.log(Math.hypot(re[i],im[i]))/Math.PI*fe*2; if(freq>180&&freq<fe-100&&bw>0&&bw<SPEC.bw) f.push(freq); }
+  f.sort((u,v)=>u-v); const f1=f.find(v=>v>=200&&v<=1150); if(f1===undefined) return null; const f2=f.find(v=>v>f1+120&&v<3600); if(f2===undefined) return null; return [f1,f2]; }
 /*DSP-END*/
 
 // ---------- Vowel data ----------
@@ -286,15 +311,15 @@ const VOW = {
   'OU': {ipa:'u', say:'ou', m:[300,750],  f:[330,820],  tip:"“oo” as in “food”: push your lips forward, make them very round and keep your tongue back."}
 };
 // Measured detector bias per vowel (LPC under-/over-shoot), applied at 75% strength
-const BIAS = { m:{I:[.91,1.02],U:[.88,1.08],'É':[.89,1.05],'È':[.87,1.0],EU:[.85,1.05],E:[.84,1.05],A:[.85,.96],O:[.79,.86],OU:[.83,.81]},
-               f:{I:[1.26,1.02],U:[1.25,1],'É':[1.04,1.03],'È':[.97,1.0],EU:[.97,1.01],E:[.94,1.01],A:[.9,.94],O:[1,.88],OU:[1.15,.84]} };
+const BIAS = { m:{I:[0.91,0.99],U:[0.89,1.04],'É':[0.86,1.02],'È':[0.87,0.99],EU:[0.85,1.03],E:[0.85,1],A:[0.86,0.97],O:[0.76,0.75],OU:[0.83,0.94]},
+               f:{I:[1.23,1.02],U:[1.23,1.04],'É':[1.07,1.03],'È':[0.88,1.01],EU:[1.02,1],E:[0.96,0.98],A:[0.87,1],O:[1.03,0.88],OU:[1.09,0.86]} };
 const SETS = { easy:['I','U','E','A','O'], hard:['I','U','É','E','A','O','OU'], expert:['I','U','É','È','EU','A','O','OU'] };
 // Example words: [before, vowel, after]
 const WORDS = { I:[['l','i','t'],['s','i',''],['v','ie','']], U:[['t','u',''],['r','ue',''],['j','u','s']], 'É':[['caf','é',''],['th','é',''],['','é','té']],
   'È':[['m','è','re'],['f','ê','te'],['tr','è','s']], E:[['l','e',''],['j','e',''],['d','e','']], EU:[['f','eu',''],['bl','eu',''],['d','eu','x']],
   A:[['ch','a','t'],['p','a','pa'],['l','a','']], O:[['m','o','t'],['b','eau',''],['ch','au','d']], OU:[['v','ou','s'],['l','ou','p'],['t','ou','t']] };
 const pickWord = L => WORDS[L][Math.floor(Math.random()*WORDS[L].length)];
-const LIMIT = { relaxed:{d:6.5, c:0.5}, normal:{d:3.6, c:0.6}, strict:{d:2.2, c:0.72} };
+const LIMIT = { relaxed:{d:8, c:0.45}, normal:{d:5, c:0.52}, strict:{d:3, c:0.62} };
 const SPEED = { slow:3.4, normal:4.6, fast:6.2 };   // world units per second
 const COLORS = ['#ff8fa3','#ffc94d','#7ee0a8','#b5e48c','#6fb6ff','#c59bff','#ff9f5a','#5fd3d8'];
 const WALLS_PER_GAME = 10, HEARTS = 5;
@@ -327,7 +352,7 @@ let actx = null, analyser = null, abuf = null, thr = 0.01, speaking = false;
 async function initAudio(){
   if (actx){ await actx.resume(); return; }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('nomedia');
-  const stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false, noiseSuppression:false, autoGainControl:true}});
+  const stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false, noiseSuppression:false, autoGainControl:false, channelCount:1}});
   actx = new (window.AudioContext || window.webkitAudioContext)();
   await actx.resume();
   const src = actx.createMediaStreamSource(stream);
@@ -364,29 +389,49 @@ function say(L, force){
 
 // ---------- Detection ----------
 const S = { state:'menu', paused:false, voiced:false, f1:0, f2:0, ranked:[], clear:false, conf:0, rms:0, level:0 };
-let hist = [], lastValid = 0, trail = [];
+let hist = [], lastValid = 0, trail = [], noiseFloor = 0, dSm = null, lastLane = -1, noiseP = null, psdRing = [];
+S.lastVoiced = -1e9; S.gate = 0;
 const median = a => { const b = a.slice().sort((x,y)=>x-y); return b[b.length>>1]; };
 function analyse(t){
   if (!analyser) return;
   analyser.getFloatTimeDomainData(abuf);
   let s = 0; for (let i = 0; i < abuf.length; i++) s += abuf[i]*abuf[i];
   S.rms = Math.sqrt(s / abuf.length);
-  S.level += (Math.min(1, S.rms / 0.15) - S.level) * 0.3;
-  if (speaking){ S.voiced = false; return; }
-  if (S.rms > thr){ const fr = lpcFormants(abuf, actx.sampleRate); if (fr){ hist.push({t, f1:fr[0], f2:fr[1]}); lastValid = t; } }
-  hist = hist.filter(h => t - h.t < 140);
-  if (hist.length >= 2 && t - lastValid < 160){
-    S.voiced = true; S.f1 = median(hist.map(h => h.f1)); S.f2 = median(hist.map(h => h.f2)); classify();
+  S.level += (Math.min(1, S.rms / 0.05) - S.level) * 0.3;
+  if (speaking){ S.voiced = false; S.clear = false; return; }
+  // adaptive noise floor: drops fast, rises very slowly (so a held vowel is never mistaken for background noise)
+  noiseFloor = !noiseFloor ? S.rms : (S.rms < noiseFloor ? noiseFloor*0.85 + S.rms*0.15 : noiseFloor*0.9995 + S.rms*0.0005);
+  S.gate = Math.max(0.0015, Math.min(thr, noiseFloor*2.2));
+  const P = psd(abuf);
+  if (S.state === 'calib'){ if (!noiseP) noiseP = P.slice(); else for (let k = 0; k < P.length; k++) noiseP[k] = noiseP[k]*0.8 + P[k]*0.2; }
+  if (S.rms > S.gate){
+    psdRing.push(P); if (psdRing.length > 3) psdRing.shift();
+    const A = new Float64Array(P.length); psdRing.forEach(Q => { for (let k = 0; k < A.length; k++) A[k] += Q[k] / psdRing.length; });
+    const fr = formantsFromPSD(A, actx.sampleRate, noiseP); if (fr){ hist.push({t, f1:fr[0], f2:fr[1]}); lastValid = t; }
+  } else {
+    psdRing = [];
+    if (S.state !== 'calib'){ if (!noiseP) noiseP = P.slice(); else for (let k = 0; k < P.length; k++) noiseP[k] = noiseP[k]*0.97 + P[k]*0.03; }
+  }
+  hist = hist.filter(h => t - h.t < 220);
+  if (hist.length >= 2 && t - lastValid < 350){
+    S.voiced = true; S.lastVoiced = t; S.f1 = median(hist.map(h => h.f1)); S.f2 = median(hist.map(h => h.f2)); classify(t);
     trail.push([S.f1, S.f2]); if (trail.length > 24) trail.shift();
-  } else { S.voiced = false; S.clear = false; if (trail.length) trail.shift(); }
+  } else { S.voiced = false; S.clear = false; if (trail.length) trail.shift(); if (t - lastValid > 700){ dSm = null; lastLane = -1; } }
 }
-function classify(){
-  const L1 = Math.log(S.f1), L2 = Math.log(S.f2);
-  S.ranked = lanes().map((L, i) => { const p = proto(L); const a = (L1 - Math.log(p[0]))/0.15, b = (L2 - Math.log(p[1]))/0.12; return {L, i, d:a*a + b*b}; }).sort((x, y) => x.d - y.d);
+function classify(t){
+  const L1 = Math.log(S.f1), L2 = Math.log(S.f2), ls = lanes();
+  const raw = ls.map(L => { const p = proto(L); const a = (L1 - Math.log(p[0]))/0.15, b = (L2 - Math.log(p[1]))/0.12; return a*a + b*b; });
+  if (!dSm || dSm.length !== raw.length) dSm = raw.slice(); else dSm = dSm.map((d, i) => d*0.7 + raw[i]*0.3);
+  S.ranked = ls.map((L, i) => ({L, i, d: dSm[i]})).sort((x, y) => x.d - y.d);
+  // stickiness: keep the current lane unless another vowel is clearly better
+  if (lastLane >= 0 && lastLane < ls.length && S.ranked[0].i !== lastLane && dSm[lastLane] < S.ranked[0].d + 0.9){
+    const k = S.ranked.findIndex(r => r.i === lastLane); const keep = S.ranked.splice(k, 1)[0]; S.ranked.unshift(keep);
+  }
   const w1 = Math.exp(-S.ranked[0].d/2), w2 = Math.exp(-S.ranked[1].d/2);
   S.conf = w1 / (w1 + w2 + 1e-12);
   const lim = LIMIT[opt.strict];
   S.clear = S.ranked[0].d < lim.d && S.conf > lim.c;
+  if (S.clear) lastLane = S.ranked[0].i;
 }
 
 
@@ -399,7 +444,7 @@ function unlockAudioInGesture(){
 initAudio = async function(){
   if (analyser){ await actx.resume(); return; }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('nomedia');
-  const stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false, noiseSuppression:false, autoGainControl:true}});
+  const stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false, noiseSuppression:false, autoGainControl:false, channelCount:1}});
   if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
   await actx.resume();
   const src = actx.createMediaStreamSource(stream);
@@ -722,7 +767,7 @@ function update(dt, t){
   analyse(t);
   if (S.state === 'calib'){
     calibAcc.push(S.rms);
-    if (t - calibStart > 900){ const sorted = calibAcc.slice().sort((x, y) => x - y), n = sorted[Math.floor(sorted.length*0.2)] || 0; thr = Math.min(0.02, Math.max(0.004, n*2.5)); center('');
+    if (t - calibStart > 900){ const sorted = calibAcc.slice().sort((x, y) => x - y), n = sorted[Math.floor(sorted.length*0.2)] || 0; thr = Math.min(0.02, Math.max(0.003, n*2.5)); noiseFloor = n || noiseFloor; center('');
       S.state = nextMode;
       if (nextMode === 'play') newGame();
       else if (nextMode === 'cal'){ showChrome(true, false); startCal(t); }
@@ -739,7 +784,8 @@ function update(dt, t){
     ball.y += (target - ball.y) * Math.min(1, dt*10); ball.vy = 0;
   } else if (S.state === 'menu'){
     ball.y += (laneY(Math.floor(lanes().length/2)) + Math.sin(t/500)*0.3 - ball.y) * Math.min(1, dt*3); ball.vy = 0;
-  } else { ball.vy -= (S.voiced ? 6 : 14) * dt; ball.y += ball.vy * dt; }
+  } else if (active && (S.voiced || t - S.lastVoiced < 450)){ ball.vy = 0; /* unclear or a tiny dropout: hold altitude */ }
+  else { ball.vy -= 12 * dt; ball.y += ball.vy * dt; }
   if (ball.y < BALL_R){ ball.y = BALL_R; ball.vy = Math.abs(ball.vy) > 1.5 ? -ball.vy*0.35 : 0; }
   ball.y = Math.min(ball.y, topY() + 0.6);
   if (w && w.entering){ ball.y = Math.min(w.holeY + w.hh/2 - BALL_R*0.6, Math.max(w.holeY - w.hh/2 + BALL_R*0.6, ball.y)); }
@@ -823,7 +869,12 @@ function renderChart(){
   g.globalAlpha = 1;
   if (S.voiced){ g.beginPath(); g.arc(lx(S.f2), ly(S.f1), 6, 0, 7); g.fillStyle = '#fff'; g.fill(); g.strokeStyle = '#000'; g.lineWidth = 1.5; g.stroke(); }
 }
-function renderSide(){
+let dbgOn = location.hash === '#debug', dbgTaps = 0;
+document.querySelector('.said').addEventListener('click', () => { if (++dbgTaps >= 3){ dbgOn = !dbgOn; dbgTaps = 0; } setTimeout(() => dbgTaps = 0, 900); });
+function renderDbg(t){ const el = $('#dbg'); el.style.display = dbgOn ? 'block' : 'none'; if (!dbgOn) return;
+  el.textContent = `rms  ${S.rms.toFixed(4)}  gate ${S.gate.toFixed(4)}\nfloor ${noiseFloor.toFixed(4)} thr ${thr.toFixed(4)}\nvoiced ${S.voiced} clear ${S.clear}\nF1 ${Math.round(S.f1)}  F2 ${Math.round(S.f2)}\n` +
+    (S.ranked.length ? S.ranked.slice(0,3).map(r => `${r.L.padEnd(3)} d=${r.d.toFixed(2)}`).join('\n') + `\nconf ${S.conf.toFixed(2)}` : '') + `\nsr ${actx ? actx.sampleRate : '-'}  voice ${opt.voice}${CAL[opt.voice] ? ' (cal)' : ''}`; }
+function renderSide(){ renderDbg();
   const said = $('#said');
   if (S.voiced && S.clear){ said.textContent = S.ranked[0].L; said.style.color = COLORS[S.ranked[0].i % COLORS.length]; }
   else if (S.voiced){ said.textContent = '?'; said.style.color = '#c9bfd8'; }
