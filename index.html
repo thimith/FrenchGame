@@ -321,7 +321,7 @@ const VOW = {
   'È':  {ipa:'ɛ', say:'è',  m:[530,1850], f:[610,2150], tip:"An open “e”, like the “e” in “bed” but held longer. Drop your jaw a little more than for É and keep your lips spread."},
   'EU': {ipa:'ø', say:'eu', m:[390,1500], f:[430,1700], tip:"Say É, keep your tongue right there, then round your lips into a small “o”. It is not “uh” and not “oo”."},
   'A':  {ipa:'a', say:'a',  m:[700,1350], f:[850,1550], tip:"Open your mouth wide for a bright “ah”, as in “father” but more forward."},
-  'O':  {ipa:'o', say:'o',  m:[380,850],  f:[420,920],  tip:"A closed “o”: round your lips into a small circle and hold it, with no “ow” glide at the end."},
+  'O':  {ipa:'o', say:'eau', m:[380,850],  f:[420,920],  tip:"The French O in « mot », « beau », « chaud »: a pure, steady “o” with lips rounded into a small circle and the jaw a little more open than for OU. Don't glide into “oo” at the end the way English “oh” does. Hold the same shape the whole time."},
   'OU': {ipa:'u', say:'ou', m:[300,750],  f:[330,820],  tip:"“oo” as in “food”: push your lips forward, make them very round and keep your tongue back."}
 };
 // Measured detector bias per vowel (LPC under-/over-shoot), applied at 75% strength
@@ -730,7 +730,9 @@ function hud(){
   const f = Math.min(1, G.idx / WALLS_PER_GAME); $('#roadFill').style.width = `calc((100% - 26px) * ${f})`; $('#roadDot').style.left = `calc((100% - 26px) * ${f})`;
 }
 let tipLetter = 'U';
-function setTip(L){ $('#tip').innerHTML = `<b>${L}</b> &nbsp;<span class="tiny">/${VOW[L].ipa}/ · ${WORDS[L].map(x => x.join('')).join(', ')}</span><br>${VOW[L].tip}`; tipLetter = L; }
+function setTip(L){ let note = '';
+  try { if (window.speechSynthesis && speechSynthesis.getVoices().length && !frVoice) note = '<br><span class="tiny">⚠️ This phone has no French voice installed, so the spoken examples may sound English. Add a French voice in your phone\'s accessibility / spoken-content settings.</span>'; } catch(e){}
+  $('#tip').innerHTML = `<b>${L}</b> &nbsp;<span class="tiny">/${VOW[L].ipa}/ · ${WORDS[L].map(x => x.join('')).join(', ')}</span><br>${VOW[L].tip}${note}`; tipLetter = L; }
 function toast(msg, ms=2200){ const el = $('#toast'); el.innerHTML = msg; el.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('show'), ms); }
 function center(html){ const el = $('#center'); if (el._h !== html){ el.innerHTML = html || ''; el._h = html; } }
 function showChrome(on, play = true){ $('#top').style.display = on ? '' : 'none'; $('#bottom').style.display = on ? '' : 'none';
