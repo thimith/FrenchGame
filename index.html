@@ -323,7 +323,7 @@ const VOW = {
   'É':  {ipa:'e', say:'é',  m:[370,2100], f:[410,2500], tip:"Like the “ay” in “say” but with no glide at the end. Keep your lips spread and the sound steady."},
   'E':  {ipa:'ə', say:'e',  m:[420,1450], f:[460,1650], tip:"A relaxed “euh” with your lips slightly rounded, the sound French people make when they hesitate."},
   'È':  {ipa:'ɛ', say:'è',  m:[530,1850], f:[610,2150], tip:"An open “e”, like the “e” in “bed” but held longer. Drop your jaw a little more than for É and keep your lips spread."},
-  'EU': {ipa:'ø', say:'eu', m:[390,1500], f:[430,1700], tip:"Say É, keep your tongue right there, then round your lips into a small “o”. It is not “uh” and not “oo”."},
+  'EU': {ipa:'ø', say:'eux', m:[390,1500], f:[430,1700], tip:"Say É, keep your tongue right there, then round your lips into a small “o”. It is not “uh” and not “oo”."},
   'A':  {ipa:'a', say:'a',  m:[700,1350], f:[850,1550], tip:"Open your mouth wide for a bright “ah”, as in “father” but more forward."},
   'O':  {ipa:'o', say:'eau', m:[380,850],  f:[420,920],  tip:"The French O in « mot », « beau », « chaud »: a pure, steady “o” with lips rounded into a small circle and the jaw a little more open than for OU. Don't glide into “oo” at the end the way English “oh” does. Hold the same shape the whole time."},
   'OU': {ipa:'u', say:'ou', m:[300,750],  f:[330,820],  tip:"“oo” as in “food”: push your lips forward, make them very round and keep your tongue back."}
@@ -982,7 +982,8 @@ function showShare(res){
       <div class="tiny" style="margin-bottom:6px">One-time setup: paste a GitHub token that can edit <b>${GH.owner}/${GH.repo}</b>. Create one at <b>github.com → Settings → Developer settings → Fine-grained tokens</b>. Choose only the <b>${GH.repo}</b> repository, with the permission <b>Contents: Read and write</b>. It's stored only on this phone.</div>
       <input id="tokIn" type="password" placeholder="github_pat_…" autocomplete="off" style="width:100%;font:inherit;font-size:15px;background:#121842;color:#fbf3e6;border:1px solid #3a4580;border-radius:12px;padding:10px">
     </div>
-    <div id="pubMsg" class="tiny" style="margin-top:8px"></div></li>`;
+    <div id="pubMsg" class="tiny" style="margin-top:8px"></div>
+    <div class="tiny" style="margin-top:10px">No token? <a href="#" id="copyCode" style="color:#ffc94d">Copy my sounds</a> and send the code to whoever maintains the game. They can publish it for you.</div></li>`;
   $('#again').style.display = 'none';
   const cp = $('#copyBtn'); cp.style.display = ''; cp.disabled = false; cp.textContent = '📤 Publish for Sharan';
   cp.onclick = async () => {
@@ -1003,6 +1004,9 @@ function showShare(res){
       else $('#pubMsg').textContent = "Couldn't reach GitHub (" + e.message + '). Check your connection and try again.';
     }
   };
+  $('#copyCode').onclick = async e => { e.preventDefault(); const code = 'SRF-REF ' + JSON.stringify(ref);
+    try { await navigator.clipboard.writeText(code); $('#copyCode').textContent = 'Copied ✓ Paste it in your message'; }
+    catch(_){ $('#pubMsg').innerHTML = '<textarea readonly style="width:100%;height:90px;font-size:11px;background:#121842;color:#fbf3e6;border-radius:8px">' + code + '</textarea>Select all and copy.'; } };
   $('#menu').classList.add('hidden'); $('#over').classList.remove('hidden');
 }
 // ---------- UI ----------
