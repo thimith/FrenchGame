@@ -962,7 +962,7 @@ function showShare(res){
   $('#overStats').innerHTML = `<li style="display:block;word-break:break-all;font-size:12px;color:#c9bfd8">${link}</li>`;
   $('#again').style.display = 'none';
   const cp = $('#copyBtn'); cp.style.display = ''; cp.textContent = 'Copy link'; cp.onclick = async () => { try { await navigator.clipboard.writeText(link); cp.textContent = 'Copied ✓'; } catch(e){ cp.textContent = 'Select the link above and copy it'; } };
-  $('#over').classList.remove('hidden');
+  $('#menu').classList.add('hidden'); $('#over').classList.remove('hidden');
 }
 // ---------- UI ----------
 async function start(mode){
