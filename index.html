@@ -296,6 +296,15 @@ function formantsFromPSD(P, sr, noise){
   const {re,im}=polyRoots(Array.from(a)); const fe=kmax*df, f=[];
   for(let i=0;i<p;i++){ if(im[i]<=0.005) continue; const freq=Math.atan2(im[i],re[i])/Math.PI*fe; const bw=-Math.log(Math.hypot(re[i],im[i]))/Math.PI*fe*2; if(freq>180&&freq<fe-100&&bw>0&&bw<SPEC.bw) f.push(freq); }
   f.sort((u,v)=>u-v); const f1=f.find(v=>v>=200&&v<=1150); if(f1===undefined) return null; const f2=f.find(v=>v>f1+120&&v<3600); if(f2===undefined) return null; return [f1,f2]; }
+// Voicing check: a sung/spoken vowel repeats at its pitch (75-400 Hz); hiss and clicks don't.
+function periodicity(raw, sr){
+  const D = Math.max(1, Math.round(sr / 12000)), fs = sr / D, n = Math.floor(raw.length / D), x = new Float64Array(n);
+  let m = 0; for (let i = 0; i < n; i++){ x[i] = raw[i*D]; m += x[i]; } m /= n; for (let i = 0; i < n; i++) x[i] -= m;
+  const lo = Math.floor(fs / 400), hi = Math.min(n - 64, Math.ceil(fs / 75)); let best = 0;
+  for (let L = lo; L <= hi; L++){ let c = 0, e1 = 0, e2 = 0; for (let i = 0; i + L < n; i++){ c += x[i]*x[i+L]; e1 += x[i]*x[i]; e2 += x[i+L]*x[i+L]; }
+    const r = c / Math.sqrt(e1*e2 + 1e-20); if (r > best) best = r; }
+  return best;
+}
 /*DSP-END*/
 
 // ---------- Vowel data ----------
@@ -401,10 +410,11 @@ function analyse(t){
   if (speaking){ S.voiced = false; S.clear = false; return; }
   // adaptive noise floor: drops fast, rises very slowly (so a held vowel is never mistaken for background noise)
   noiseFloor = !noiseFloor ? S.rms : (S.rms < noiseFloor ? noiseFloor*0.85 + S.rms*0.15 : noiseFloor*0.9995 + S.rms*0.0005);
-  S.gate = Math.max(0.0015, Math.min(thr, noiseFloor*2.2));
+  S.gate = Math.max(0.0025, Math.min(thr, noiseFloor*2.5));
+  S.pitchy = S.rms > S.gate ? periodicity(abuf, actx.sampleRate) : 0;
   const P = psd(abuf);
   if (S.state === 'calib'){ if (!noiseP) noiseP = P.slice(); else for (let k = 0; k < P.length; k++) noiseP[k] = noiseP[k]*0.8 + P[k]*0.2; }
-  if (S.rms > S.gate){
+  if (S.rms > S.gate && S.pitchy > 0.45){
     psdRing.push(P); if (psdRing.length > 3) psdRing.shift();
     const A = new Float64Array(P.length); psdRing.forEach(Q => { for (let k = 0; k < A.length; k++) A[k] += Q[k] / psdRing.length; });
     const fr = formantsFromPSD(A, actx.sampleRate, noiseP); if (fr){ hist.push({t, f1:fr[0], f2:fr[1]}); lastValid = t; }
@@ -872,7 +882,7 @@ function renderChart(){
 let dbgOn = location.hash === '#debug', dbgTaps = 0;
 document.querySelector('.said').addEventListener('click', () => { if (++dbgTaps >= 3){ dbgOn = !dbgOn; dbgTaps = 0; } setTimeout(() => dbgTaps = 0, 900); });
 function renderDbg(t){ const el = $('#dbg'); el.style.display = dbgOn ? 'block' : 'none'; if (!dbgOn) return;
-  el.textContent = `rms  ${S.rms.toFixed(4)}  gate ${S.gate.toFixed(4)}\nfloor ${noiseFloor.toFixed(4)} thr ${thr.toFixed(4)}\nvoiced ${S.voiced} clear ${S.clear}\nF1 ${Math.round(S.f1)}  F2 ${Math.round(S.f2)}\n` +
+  el.textContent = `rms  ${S.rms.toFixed(4)}  gate ${S.gate.toFixed(4)}  voice ${(S.pitchy||0).toFixed(2)}\nfloor ${noiseFloor.toFixed(4)} thr ${thr.toFixed(4)}\nvoiced ${S.voiced} clear ${S.clear}\nF1 ${Math.round(S.f1)}  F2 ${Math.round(S.f2)}\n` +
     (S.ranked.length ? S.ranked.slice(0,3).map(r => `${r.L.padEnd(3)} d=${r.d.toFixed(2)}`).join('\n') + `\nconf ${S.conf.toFixed(2)}` : '') + `\nsr ${actx ? actx.sampleRate : '-'}  voice ${opt.voice}${CAL[opt.voice] ? ' (cal)' : ''}`; }
 function renderSide(){ renderDbg();
   const said = $('#said');
