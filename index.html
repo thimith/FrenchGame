@@ -195,6 +195,8 @@
           <label class="check"><input type="checkbox" id="optSay" checked> Say each sound aloud</label>
           <label class="check"><input type="checkbox" id="optGuides" checked> Show letter guide</label>
         </div>
+        <button class="btn alt" id="teachBtn" style="font-size:16px">🎓 Teach all 9 sounds (native speaker)</button>
+        <p class="tiny" style="margin:8px 0 0">For a native French speaker: say each sound once and the game uses your voice as the exact target. You then get a link to share your pronunciation as someone else's reference.</p>
       </details>
       <p class="tiny" style="margin:14px 0 0">Tip: turn the sound up, hold the phone at about face height and play somewhere quiet. Tap <b>Calibrate</b> once so it learns your voice (10 seconds).</p>
     </div>
@@ -205,7 +207,8 @@
     <div class="panel">
       <p id="overSub"></p>
       <ul class="statsList" id="overStats"></ul>
-      <button class="btn" id="againBtn">↻ Rejouer</button>
+      <button class="btn" id="copyBtn" style="display:none">Copy link</button>
+      <div id="again"><button class="btn" id="againBtn">↻ Rejouer</button></div>
       <button class="btn alt" id="overMenuBtn">Menu</button>
     </div>
   </div>
@@ -359,12 +362,20 @@ function voiceType(){ if (opt.voice !== 'auto') return opt.voice;
   return autoType; }
 function baseProto(L){ const vt = voiceType(), v = vt === 'low' ? 'm' : 'f'; const b = VOW[L][v], bi = BIAS[v][L], k = vt === 'child' ? 1.15 : 1;
   return [b[0]*k*Math.pow(bi[0], 0.75), b[1]*k*Math.pow(bi[1], 0.75)]; }
-let CAL = {}; try { CAL = JSON.parse(localStorage.getItem('srf-cal') || '{}') || {}; } catch(e){}
-function proto(L){ const b = baseProto(L), c = CAL[voiceType()];
+let CAL = {}, CALV = {}, REF = null;
+try { CAL = JSON.parse(localStorage.getItem('srf-cal') || '{}') || {}; CALV = JSON.parse(localStorage.getItem('srf-calv') || '{}') || {}; REF = JSON.parse(localStorage.getItem('srf-ref') || 'null'); } catch(e){}
+try { const m = location.hash.match(/#ref=([A-Za-z0-9+\/]+)/); if (m){ REF = JSON.parse(decodeURIComponent(escape(atob(m[1])))); localStorage.setItem('srf-ref', JSON.stringify(REF)); history.replaceState(null, '', location.pathname); setTimeout(() => toast('Native French reference loaded ✓ Now tap Calibrate.', 4000), 800); } } catch(e){}
+function protoSource(){ const vt = voiceType(); return CALV[vt] ? 'taught' : (REF && CAL[vt] && CAL[vt].corners ? 'native ref' : (CAL[vt] ? 'calibrated' : 'default')); }
+function proto(L){ const vt = voiceType();
+  if (CALV[vt] && CALV[vt][L]) return CALV[vt][L];
+  if (REF && REF[L] && CAL[vt] && CAL[vt].corners){ const m = cornerMean(CAL[vt].corners); return [Math.exp(m[0] + REF[L][0]), Math.exp(m[1] + REF[L][1])]; }
+  const b = baseProto(L), c = CAL[vt];
   if (c) return [b[0]*Math.exp(c.k1), b[1]*Math.exp(c.k2)];
   return [b[0]*opt.fine, b[1]*opt.fine]; }
-function calStatus(){ const c = CAL[voiceType()]; $('#calStatus').innerHTML = c ? 'Calibrated to your voice ✓ <a href="#" id="calReset" style="color:#9fb0c6">reset</a>' : 'Not calibrated. Uses the voice setting and fine-tune.';
-  $('#optFine').disabled = !!c; const r = $('#calReset'); if (r) r.onclick = e => { e.preventDefault(); delete CAL[voiceType()]; try { localStorage.setItem('srf-cal', JSON.stringify(CAL)); } catch(_){} calStatus(); }; }
+function calStatus(){ const vt = voiceType(), src = protoSource();
+  const msg = { taught: 'Using your own taught sounds ✓', 'native ref': 'Calibrated against the native French reference ✓', calibrated: 'Calibrated to your voice ✓', default: (REF ? 'Native reference loaded. Tap Calibrate to use it.' : 'Not calibrated yet. Tap Calibrate (10 s).') }[src];
+  $('#calStatus').innerHTML = msg + ((CAL[vt] || CALV[vt]) ? ' <a href="#" id="calReset" style="color:#9fb0c6">reset</a>' : '');
+  $('#optFine').disabled = !!CAL[vt]; const r = $('#calReset'); if (r) r.onclick = e => { e.preventDefault(); delete CAL[vt]; delete CALV[vt]; saveCal(); calStatus(); }; }
 
 // ---------- Audio ----------
 let actx = null, analyser = null, abuf = null, thr = 0.01, speaking = false;
@@ -445,7 +456,7 @@ function classify(t){
   if (!dSm || dSm.length !== raw.length) dSm = raw.slice(); else dSm = dSm.map((d, i) => d*0.7 + raw[i]*0.3);
   S.ranked = ls.map((L, i) => ({L, i, d: dSm[i]})).sort((x, y) => x.d - y.d);
   // stickiness: keep the current lane unless another vowel is clearly better
-  if (lastLane >= 0 && lastLane < ls.length && S.ranked[0].i !== lastLane && dSm[lastLane] < S.ranked[0].d + 0.9){
+  if (lastLane >= 0 && lastLane < ls.length && S.ranked[0].i !== lastLane && dSm[lastLane] < S.ranked[0].d + 0.4){
     const k = S.ranked.findIndex(r => r.i === lastLane); const keep = S.ranked.splice(k, 1)[0]; S.ranked.unshift(keep);
   }
   const w1 = Math.exp(-S.ranked[0].d/2), w2 = Math.exp(-S.ranked[1].d/2);
@@ -772,6 +783,7 @@ function gameOver(won){
     return `<li><span><b>${L}</b> — ${s.pass}/${s.tries}</span><span>${note}</span></li>`;
   });
   $('#overStats').innerHTML = items.join('');
+  $('#again').style.display = ''; $('#copyBtn').style.display = 'none';
   $('#over').classList.remove('hidden');
 }
 
@@ -793,7 +805,7 @@ function update(dt, t){
     if (t - calibStart > 900){ const sorted = calibAcc.slice().sort((x, y) => x - y), n = sorted[Math.floor(sorted.length*0.2)] || 0; thr = Math.min(0.02, Math.max(0.003, n*2.5)); noiseFloor = n || noiseFloor; center('');
       S.state = nextMode;
       if (nextMode === 'play') newGame();
-      else if (nextMode === 'cal'){ showChrome(true, false); startCal(t); }
+      else if (nextMode === 'cal' || nextMode === 'teach'){ S.state = 'cal'; showChrome(true, false); startCal(t, nextMode === 'teach' ? 'teach' : 'quick'); }
       else { buildLanes(); clearWalls(); showChrome(true, false); $('#mapPop').classList.add('show'); toast('Say any vowel and watch the ball and the vowel map.', 3000); setTip(tipLetter); }
       $('#menuBtn').style.display = ''; }
   }
@@ -868,7 +880,7 @@ function render3d(t, dt){
   if (S.state === 'practice') center(S.voiced && S.clear ? `<div class="big" style="color:${COLORS[S.ranked[0].i % COLORS.length]}">${S.ranked[0].L}</div>` : `<div class="msg" style="opacity:.75">Say any vowel…</div>`);
   if (S.state === 'cal' && CALRUN){
     const L = CALRUN.steps[CALRUN.k] || 'OU', pr = CALRUN.phase === 'rec' ? Math.min(1, (t - CALRUN.t0)/2000) : 0;
-    center(`<div class="msg">Learning your voice · ${Math.min(CALRUN.k + 1, 3)} / 3</div><div class="big" style="color:#ffc94d">${L}</div><div class="msg">${CALRUN.phase === 'rec' ? `Say « ${L} » and hold it…` : 'Listen…'}</div><div class="prog"><i style="width:${(pr*100).toFixed(0)}%"></i></div>`);
+    center(`<div class="msg">Learning your voice · ${Math.min(CALRUN.k + 1, CALRUN.steps.length)} / ${CALRUN.steps.length}</div><div class="big" style="color:#ffc94d">${L}</div><div class="msg">${CALRUN.phase === 'rec' ? `Say « ${L} » and hold it…` : 'Listen…'}</div><div class="prog"><i style="width:${(pr*100).toFixed(0)}%"></i></div>`);
   }
 }
 function fit(c){ const r = c.getBoundingClientRect(), d = window.devicePixelRatio || 1; const w = Math.round(r.width*d), h = Math.round(r.height*d);
@@ -896,7 +908,7 @@ let dbgOn = location.hash === '#debug', dbgTaps = 0;
 document.querySelector('.said').addEventListener('click', () => { if (++dbgTaps >= 3){ dbgOn = !dbgOn; dbgTaps = 0; } setTimeout(() => dbgTaps = 0, 900); });
 function renderDbg(t){ const el = $('#dbg'); el.style.display = dbgOn ? 'block' : 'none'; if (!dbgOn) return;
   el.textContent = `rms  ${S.rms.toFixed(4)}  gate ${S.gate.toFixed(4)}  voice ${(S.pitchy||0).toFixed(2)}\nfloor ${noiseFloor.toFixed(4)} thr ${thr.toFixed(4)}\nvoiced ${S.voiced} clear ${S.clear}\nF1 ${Math.round(S.f1)}  F2 ${Math.round(S.f2)}\n` +
-    (S.ranked.length ? S.ranked.slice(0,3).map(r => `${r.L.padEnd(3)} d=${r.d.toFixed(2)}`).join('\n') + `\nconf ${S.conf.toFixed(2)}` : '') + `\nsr ${actx ? actx.sampleRate : '-'}  voice ${opt.voice}→${voiceType()}${CAL[voiceType()] ? ' (cal)' : ''}  pitch ${Math.round(pitchEst)}Hz`; }
+    (S.ranked.length ? S.ranked.slice(0,3).map(r => `${r.L.padEnd(3)} d=${r.d.toFixed(2)}`).join('\n') + `\nconf ${S.conf.toFixed(2)}` : '') + `\nsr ${actx ? actx.sampleRate : '-'}  voice ${opt.voice}→${voiceType()} [${protoSource()}]${CAL[voiceType()] ? ' (cal)' : ''}  pitch ${Math.round(pitchEst)}Hz`; }
 function renderSide(){ renderDbg();
   const said = $('#said');
   if (S.voiced && S.clear){ said.textContent = S.ranked[0].L; said.style.color = COLORS[S.ranked[0].i % COLORS.length]; }
@@ -907,30 +919,51 @@ function renderSide(){ renderDbg();
   $('#lBar').style.width = (S.level*100).toFixed(0) + '%';
 }
 
-// ---------- Voice calibration (corner vowels A, I, OU) ----------
+// ---------- Calibration ----------
+// quick: A, I, OU (adapts targets to a voice). teach: all 9 sounds from a native speaker (exact personal targets + shareable reference)
+const ALL9 = ['A','I','OU','E','O','U','É','È','EU'], CORNERS = ['A','I','OU'];
 let CALRUN = null;
-function startCal(t){ buildLanes(); clearWalls(); CALRUN = { steps:['A','I','OU'], k:0, phase:'speak', t0:t, f1:[], f2:[], res:{} }; }
+function startCal(t, mode){ buildLanes(); clearWalls(); CALRUN = { mode, steps: mode === 'teach' ? ALL9.slice() : CORNERS.slice(), k:0, phase:'speak', t0:t, f1:[], f2:[], res:{}, tries:0 }; }
+function saveCal(){ try { localStorage.setItem('srf-cal', JSON.stringify(CAL)); localStorage.setItem('srf-calv', JSON.stringify(CALV)); } catch(e){} }
 function updateCal(t){
   const c = CALRUN; if (!c) return; const L = c.steps[c.k];
   if (c.phase === 'speak'){ say(L, true); c.phase = 'wait'; c.t0 = t; setTip(L); }
   else if (c.phase === 'wait'){ if (!speaking && t - c.t0 > 450){ c.phase = 'rec'; c.t0 = t; c.f1 = []; c.f2 = []; } }
   else if (c.phase === 'rec'){
-    if (S.voiced && t - c.t0 > 300){ c.f1.push(S.f1); c.f2.push(S.f2); }
-    if (t - c.t0 > 2000){
-      if (c.f1.length >= 10){ c.res[L] = [median(c.f1), median(c.f2)]; c.k++; }
-      else toast("I didn't hear that clearly. Again, a bit louder and longer.", 2000);
+    if (S.voiced && t - c.t0 > 350){ c.f1.push(S.f1); c.f2.push(S.f2); }
+    if (t - c.t0 > 2300){
+      if (c.f1.length >= 10){ c.res[L] = [median(c.f1), median(c.f2)]; c.k++; c.tries = 0; }
+      else { c.tries++; toast("I didn't hear that clearly. Again, a bit louder and longer.", 2000); }
       c.phase = 'speak';
-      if (c.k >= c.steps.length){
-        let s1 = 0, s2 = 0; c.steps.forEach(V => { const b = baseProto(V); s1 += Math.log(c.res[V][0]/b[0]); s2 += Math.log(c.res[V][1]/b[1]); });
-        const cl = x => Math.max(-0.3, Math.min(0.3, x));
-        CAL[voiceType()] = { k1: cl(s1/3), k2: cl(s2/3) };
-        try { localStorage.setItem('mdv-cal', JSON.stringify(CAL)); } catch(e){}
-        CALRUN = null; center(''); toast('Voice learned ✓ Now tap Jouer.', 2500); toMenu(); calStatus();
-      }
+      if (c.k >= c.steps.length) finishCal(c);
     }
   }
 }
-
+function finishCal(c){
+  const vt = voiceType();
+  let s1 = 0, s2 = 0; CORNERS.forEach(V => { const b = baseProto(V); s1 += Math.log(c.res[V][0]/b[0]); s2 += Math.log(c.res[V][1]/b[1]); });
+  const cl = x => Math.max(-0.35, Math.min(0.35, x));
+  CAL[vt] = { k1: cl(s1/3), k2: cl(s2/3), corners: { A: c.res.A, I: c.res.I, OU: c.res.OU } };
+  if (c.mode === 'teach'){ CALV[vt] = Object.assign({}, c.res); }
+  saveCal(); CALRUN = null; center('');
+  if (c.mode === 'teach'){ toMenu(); showShare(c.res); }
+  else { toast('Voice learned ✓ Now tap Jouer.', 2500); toMenu(); }
+  calStatus();
+}
+// native reference = each sound's log-formants relative to the speaker's own A/I/OU average (speaker-independent shape)
+function cornerMean(cs){ let m1 = 0, m2 = 0; CORNERS.forEach(V => { m1 += Math.log(cs[V][0]); m2 += Math.log(cs[V][1]); }); return [m1/3, m2/3]; }
+function makeRef(res){ const m = cornerMean(res), ref = {}; ALL9.forEach(V => { if (res[V]) ref[V] = [+(Math.log(res[V][0]) - m[0]).toFixed(3), +(Math.log(res[V][1]) - m[1]).toFixed(3)]; }); return ref; }
+function showShare(res){
+  const ref = makeRef(res), code = btoa(unescape(encodeURIComponent(JSON.stringify(ref)))).replace(/=+$/, '');
+  const link = location.origin + location.pathname + '#ref=' + code;
+  $('#overKicker').textContent = 'Native reference saved';
+  $('#overTitle').innerHTML = 'Merci ! 🇫🇷';
+  $('#overSub').innerHTML = `The game now uses <b>your</b> voice as the target for every sound on this phone.<br><br>To give Sharan your pronunciation as her reference, send her this link. She opens it once, taps <b>Calibrate</b>, and the game maps your vowels onto her voice.`;
+  $('#overStats').innerHTML = `<li style="display:block;word-break:break-all;font-size:12px;color:#c9bfd8">${link}</li>`;
+  $('#again').style.display = 'none';
+  const cp = $('#copyBtn'); cp.style.display = ''; cp.textContent = 'Copy link'; cp.onclick = async () => { try { await navigator.clipboard.writeText(link); cp.textContent = 'Copied ✓'; } catch(e){ cp.textContent = 'Select the link above and copy it'; } };
+  $('#over').classList.remove('hidden');
+}
 // ---------- UI ----------
 async function start(mode){
   unlockAudioInGesture();
@@ -949,6 +982,7 @@ function toMenu(){ S.state = 'menu'; G.endAt = 0; CALRUN = null; center(''); sho
   $('#over').classList.add('hidden'); $('#menu').classList.remove('hidden'); clearWalls(); buildLanes(); }
 $('#playBtn').onclick = () => start('play');
 $('#calBtn').onclick = () => start('cal');
+$('#teachBtn').onclick = () => start('teach');
 $('#practiceBtn').onclick = () => start('practice');
 $('#againBtn').onclick = () => start('play');
 $('#overMenuBtn').onclick = toMenu; $('#menuBtn').onclick = toMenu;
