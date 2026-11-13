@@ -154,6 +154,14 @@
             <option value="words">Words (tu, café…)</option>
           </select>
         </label>
+        <label>Voice
+          <select id="optVoice">
+            <option value="high" selected>Female voice</option>
+            <option value="low">Male voice</option>
+            <option value="auto">Auto (from pitch)</option>
+            <option value="child">Child</option>
+          </select>
+        </label>
         <label>Speed
           <select id="optSpeed">
             <option value="slow">Slow</option>
@@ -161,13 +169,7 @@
             <option value="fast">Fast</option>
           </select>
         </label>
-        <label>Strictness
-          <select id="optStrict">
-            <option value="relaxed">Relaxed</option>
-            <option value="normal" selected>Normal</option>
-            <option value="strict">Strict</option>
-          </select>
-        </label>
+
       </div>
       <button class="btn" id="playBtn">▶ Jouer</button>
       <div class="row2">
@@ -179,11 +181,12 @@
       <details>
         <summary>More settings</summary>
         <div class="opts">
-          <label>Voice
-            <select id="optVoice">
-              <option value="high" selected>Higher voice</option>
-              <option value="low">Lower voice</option>
-              <option value="child">Child</option>
+
+        <label>Strictness
+            <select id="optStrict">
+              <option value="relaxed">Relaxed</option>
+              <option value="normal" selected>Normal</option>
+              <option value="strict">Strict</option>
             </select>
           </label>
           <label>Voice fine-tune <span id="fineLbl">100%</span>
@@ -300,9 +303,11 @@ function formantsFromPSD(P, sr, noise){
 function periodicity(raw, sr){
   const D = Math.max(1, Math.round(sr / 12000)), fs = sr / D, n = Math.floor(raw.length / D), x = new Float64Array(n);
   let m = 0; for (let i = 0; i < n; i++){ x[i] = raw[i*D]; m += x[i]; } m /= n; for (let i = 0; i < n; i++) x[i] -= m;
-  const lo = Math.floor(fs / 400), hi = Math.min(n - 64, Math.ceil(fs / 75)); let best = 0;
+  const lo = Math.floor(fs / 400), hi = Math.min(n - 64, Math.ceil(fs / 75)); let best = 0, bestL = 0; const rs = {};
   for (let L = lo; L <= hi; L++){ let c = 0, e1 = 0, e2 = 0; for (let i = 0; i + L < n; i++){ c += x[i]*x[i+L]; e1 += x[i]*x[i]; e2 += x[i+L]*x[i+L]; }
-    const r = c / Math.sqrt(e1*e2 + 1e-20); if (r > best) best = r; }
+    const r = c / Math.sqrt(e1*e2 + 1e-20); rs[L] = r; if (r > best){ best = r; bestL = L; } }
+  for (let L = lo; L < bestL; L++) if (rs[L] >= 0.9*best && rs[L] >= (rs[L-1]||0) && rs[L] >= (rs[L+1]||0)){ bestL = L; break; }
+  periodicity.f0 = bestL ? fs / bestL : 0;
   return best;
 }
 /*DSP-END*/
@@ -338,23 +343,28 @@ const opt = { voice:'high', set:'easy', speed:'normal', strict:'normal', fine:1,
 function readOpts(){
   opt.voice = $('#optVoice').value; opt.set = $('#optSet').value; opt.speed = $('#optSpeed').value;
   opt.strict = $('#optStrict').value; opt.fine = $('#optFine').value/100; opt.say = $('#optSay').checked; opt.guides = $('#optGuides').checked; opt.show = $('#optShow').value;
-  try { localStorage.setItem('srf-opts', JSON.stringify(opt)); } catch(e){}
+  try { localStorage.setItem('srf-opts3', JSON.stringify(opt)); } catch(e){}
 }
-try { const o = JSON.parse(localStorage.getItem('srf-opts')||'null'); if (o){ Object.assign(opt,o);
+try { const o = JSON.parse(localStorage.getItem('srf-opts3')||'null'); if (o){ Object.assign(opt,o);
   $('#optVoice').value=o.voice; $('#optSet').value=o.set; $('#optSpeed').value=o.speed; $('#optStrict').value=o.strict;
   $('#optFine').value=Math.round(o.fine*100); $('#optSay').checked=o.say; $('#optGuides').checked=o.guides; if (o.show) $('#optShow').value=o.show; if (!SETS[o.set]) { opt.set='easy'; $('#optSet').value='easy'; } } } catch(e){}
 $('#fineLbl').textContent = $('#optFine').value + '%';
 $('#optFine').oninput = e => { $('#fineLbl').textContent = e.target.value + '%'; opt.fine = e.target.value/100; };
 
 const lanes = () => SETS[opt.set];
-function baseProto(L){ const v = opt.voice === 'low' ? 'm' : 'f'; const b = VOW[L][v], bi = BIAS[v][L], k = opt.voice === 'child' ? 1.15 : 1;
+// 'auto' picks lower/higher voice targets from the speaker's pitch (with hysteresis)
+let pitchEst = 0, autoType = 'high';
+function voiceType(){ if (opt.voice !== 'auto') return opt.voice;
+  if (pitchEst){ if (autoType === 'high' && pitchEst < 150) autoType = 'low'; else if (autoType === 'low' && pitchEst > 180) autoType = 'high'; }
+  return autoType; }
+function baseProto(L){ const vt = voiceType(), v = vt === 'low' ? 'm' : 'f'; const b = VOW[L][v], bi = BIAS[v][L], k = vt === 'child' ? 1.15 : 1;
   return [b[0]*k*Math.pow(bi[0], 0.75), b[1]*k*Math.pow(bi[1], 0.75)]; }
 let CAL = {}; try { CAL = JSON.parse(localStorage.getItem('srf-cal') || '{}') || {}; } catch(e){}
-function proto(L){ const b = baseProto(L), c = CAL[opt.voice];
+function proto(L){ const b = baseProto(L), c = CAL[voiceType()];
   if (c) return [b[0]*Math.exp(c.k1), b[1]*Math.exp(c.k2)];
   return [b[0]*opt.fine, b[1]*opt.fine]; }
-function calStatus(){ const c = CAL[opt.voice]; $('#calStatus').innerHTML = c ? 'Calibrated to your voice ✓ <a href="#" id="calReset" style="color:#9fb0c6">reset</a>' : 'Not calibrated. Uses the voice setting and fine-tune.';
-  $('#optFine').disabled = !!c; const r = $('#calReset'); if (r) r.onclick = e => { e.preventDefault(); delete CAL[opt.voice]; try { localStorage.setItem('srf-cal', JSON.stringify(CAL)); } catch(_){} calStatus(); }; }
+function calStatus(){ const c = CAL[voiceType()]; $('#calStatus').innerHTML = c ? 'Calibrated to your voice ✓ <a href="#" id="calReset" style="color:#9fb0c6">reset</a>' : 'Not calibrated. Uses the voice setting and fine-tune.';
+  $('#optFine').disabled = !!c; const r = $('#calReset'); if (r) r.onclick = e => { e.preventDefault(); delete CAL[voiceType()]; try { localStorage.setItem('srf-cal', JSON.stringify(CAL)); } catch(_){} calStatus(); }; }
 
 // ---------- Audio ----------
 let actx = null, analyser = null, abuf = null, thr = 0.01, speaking = false;
@@ -412,6 +422,7 @@ function analyse(t){
   noiseFloor = !noiseFloor ? S.rms : (S.rms < noiseFloor ? noiseFloor*0.85 + S.rms*0.15 : noiseFloor*0.9995 + S.rms*0.0005);
   S.gate = Math.max(0.0025, Math.min(thr, noiseFloor*2.5));
   S.pitchy = S.rms > S.gate ? periodicity(abuf, actx.sampleRate) : 0;
+  if (S.pitchy > 0.6 && periodicity.f0 > 70 && periodicity.f0 < 420){ const f = periodicity.f0; pitchEst = pitchEst ? Math.exp(Math.log(pitchEst)*0.97 + Math.log(f)*0.03) : f; }
   const P = psd(abuf);
   if (S.state === 'calib'){ if (!noiseP) noiseP = P.slice(); else for (let k = 0; k < P.length; k++) noiseP[k] = noiseP[k]*0.8 + P[k]*0.2; }
   if (S.rms > S.gate && S.pitchy > 0.45){
@@ -883,7 +894,7 @@ let dbgOn = location.hash === '#debug', dbgTaps = 0;
 document.querySelector('.said').addEventListener('click', () => { if (++dbgTaps >= 3){ dbgOn = !dbgOn; dbgTaps = 0; } setTimeout(() => dbgTaps = 0, 900); });
 function renderDbg(t){ const el = $('#dbg'); el.style.display = dbgOn ? 'block' : 'none'; if (!dbgOn) return;
   el.textContent = `rms  ${S.rms.toFixed(4)}  gate ${S.gate.toFixed(4)}  voice ${(S.pitchy||0).toFixed(2)}\nfloor ${noiseFloor.toFixed(4)} thr ${thr.toFixed(4)}\nvoiced ${S.voiced} clear ${S.clear}\nF1 ${Math.round(S.f1)}  F2 ${Math.round(S.f2)}\n` +
-    (S.ranked.length ? S.ranked.slice(0,3).map(r => `${r.L.padEnd(3)} d=${r.d.toFixed(2)}`).join('\n') + `\nconf ${S.conf.toFixed(2)}` : '') + `\nsr ${actx ? actx.sampleRate : '-'}  voice ${opt.voice}${CAL[opt.voice] ? ' (cal)' : ''}`; }
+    (S.ranked.length ? S.ranked.slice(0,3).map(r => `${r.L.padEnd(3)} d=${r.d.toFixed(2)}`).join('\n') + `\nconf ${S.conf.toFixed(2)}` : '') + `\nsr ${actx ? actx.sampleRate : '-'}  voice ${opt.voice}→${voiceType()}${CAL[voiceType()] ? ' (cal)' : ''}  pitch ${Math.round(pitchEst)}Hz`; }
 function renderSide(){ renderDbg();
   const said = $('#said');
   if (S.voiced && S.clear){ said.textContent = S.ranked[0].L; said.style.color = COLORS[S.ranked[0].i % COLORS.length]; }
@@ -910,7 +921,7 @@ function updateCal(t){
       if (c.k >= c.steps.length){
         let s1 = 0, s2 = 0; c.steps.forEach(V => { const b = baseProto(V); s1 += Math.log(c.res[V][0]/b[0]); s2 += Math.log(c.res[V][1]/b[1]); });
         const cl = x => Math.max(-0.3, Math.min(0.3, x));
-        CAL[opt.voice] = { k1: cl(s1/3), k2: cl(s2/3) };
+        CAL[voiceType()] = { k1: cl(s1/3), k2: cl(s2/3) };
         try { localStorage.setItem('mdv-cal', JSON.stringify(CAL)); } catch(e){}
         CALRUN = null; center(''); toast('Voice learned ✓ Now tap Jouer.', 2500); toMenu(); calStatus();
       }
