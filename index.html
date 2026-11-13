@@ -407,7 +407,13 @@ function sfxBonk(){ if (!actx) return; beep([180, 120], 0.18, 'triangle', 0.3);
   const f = actx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 900; const g = actx.createGain(); g.gain.value = 0.5;
   n.buffer = b; n.connect(f); f.connect(g); g.connect(actx.destination); n.start(); }
 let frVoice = null;
-function pickVoice(){ try { const vs = speechSynthesis.getVoices(); frVoice = vs.find(v => /^fr(-|_)FR/i.test(v.lang)) || vs.find(v => /^fr/i.test(v.lang)) || null; } catch(e){} }
+function pickVoice(){ try {
+  const vs = speechSynthesis.getVoices().filter(v => /^fr/i.test(v.lang)); if (!vs.length){ frVoice = null; return; }
+  const female = /am[ée]lie|audrey|marie|aur[ée]lie|virginie|julie|denise|hortense|eloise|[ée]lo[iï]se|c[ée]line|chantal|sylvie|charlotte|l[ée]a|google fran|female|femme|fr-fr-x-(frc|frd|vlf)/i;
+  const male = /thomas|henri|paul|claude|daniel|nicolas|jacques|eddy|grandpa|reed|rocko|fred|sandy|male|homme|fr-fr-x-(frb|vlf-male)/i;
+  const score = v => (/^fr[-_]FR/i.test(v.lang) ? 4 : 0) + (female.test(v.name) ? 10 : 0) - (male.test(v.name) && !female.test(v.name) ? 10 : 0) + (v.localService ? 1 : 0);
+  frVoice = vs.slice().sort((a, b) => score(b) - score(a))[0];
+} catch(e){} }
 if (window.speechSynthesis){ pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
 function say(L, force){
   if ((!opt.say && !force) || !window.speechSynthesis) return;
